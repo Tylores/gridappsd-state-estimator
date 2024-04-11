@@ -29,3 +29,8 @@
 # Executables
 *.exe
 *.app
+bin
+
+# Suitsparse and Json
+json
+SuiteSparse

@@ -81,6 +81,8 @@ public:
     sub_topo = vfed->registerSubscription(inputMap["topology"],"");
 
     sub_V = vfed->registerSubscription(inputMap["sensor_voltage_magnitude"],"V");
+
+    sub_A = vfed->registerSubscription(inputMap["sensor_voltage_angle"],"V");
     
     sub_P = vfed->registerSubscription(inputMap["sensor_power_real"],"W");
     
@@ -101,7 +103,11 @@ public:
     }
 
     if(sub_V.isValid()){
-        std::cout << " Subscription registered for feeder voltage V with port " << inputMap["sensor_voltage_magnitude"] << std::endl;
+        std::cout << " Subscription registered for feeder voltage magnitude Vmag with port " << inputMap["sensor_voltage_magnitude"] << std::endl;
+    }
+
+    if(sub_A.isValid()){
+        std::cout << " Subscription registered for feeder voltage angle Vang with port " << inputMap["sensor_voltage_angle"] << std::endl;
     }
 
     // Set up publications
@@ -132,7 +138,7 @@ public:
     // if not request more time
     while (1)
     {
-        if ((sub_topo.isUpdated()) && (sub_V.isUpdated()) && (sub_Q.isUpdated()) && (sub_V.isUpdated()))
+        if ((sub_topo.isUpdated()) && (sub_P.isUpdated()) && (sub_Q.isUpdated()) && (sub_V.isUpdated()) && (sub_A.isUpdated()))
         {
             break;
         }
@@ -152,6 +158,12 @@ public:
     V_meas = json::parse(voltages);
     std::cout<< V_meas<< std::endl;
     workQueue.push(V_meas);
+
+    // Get the voltage magnitude subscription
+    sub_A.getString(angles);
+    A_meas = json::parse(angles);
+    std::cout<< A_meas<< std::endl;
+    workQueue.push(A_meas);
 
     // Get the real power subscription
     sub_P.getString(power_real);
@@ -176,6 +188,12 @@ public:
         for (int i = 0; i < V_meas["ids"].size(); i++) {
             string meas_id = V_meas["ids"][i];
             meas_id = "V_" + meas_id;
+            meas_zids.push_back(meas_id);
+        }
+        std::cout << std::size(meas_zids) << "\n\n";
+        for (int i = 0; i < A_meas["ids"].size(); i++) {
+            string meas_id = A_meas["ids"][i];
+            meas_id = "A_" + meas_id;
             meas_zids.push_back(meas_id);
         }
         std::cout << std::size(meas_zids) << "\n\n";
@@ -352,6 +370,21 @@ public:
             Zary.zpseudos[zid] = false;
             Zary.znomvals[zid] = (V_meas["values"][i].get<double>())/std::abs(node_vnoms[node]);
         }
+        for (int i = 0; i < A_meas["ids"].size(); i++) {
+            string node, zid;
+            node = A_meas["ids"][i];
+            zid = "A_" + node;
+            Zary.zids.push_back(zid);
+            Zary.zidxs[zid] = zctr++;
+            Zary.ztypes[zid] = "ai";
+            Zary.znode1s[zid] = node;
+            Zary.znode2s[zid] = node;
+            Zary.zvals[zid] = A_meas["values"][i].get<double>();
+            //std::cout<< Zary.zvals[zid] << std::endl;
+            Zary.zsigs[zid] = 0.001;
+            Zary.zpseudos[zid] = false;
+            Zary.znomvals[zid] = A_meas["values"][i].get<double>();
+        }
         for (int i = 0; i < P_meas["ids"].size(); i++) {
             string node, zid;
             node = P_meas["ids"][i];
@@ -475,18 +508,24 @@ public:
 			// currenttime = vfed->requestTime(10000);
 
 			V_message = workQueue.pop();
+            A_message = workQueue.pop();
 			json P_message = workQueue.pop();
 			json Q_message = workQueue.pop();
 
 			std::cout<< V_message<< std::endl;
+            std::cout<< A_message<< std::endl;
 			std::cout<< P_message << std::endl;
 			std::cout<< Q_message<< std::endl;
 			
-			json V_meas_sim, P_meas_sim, Q_meas_sim;
+			json V_meas_sim, A_meas_sim, P_meas_sim, Q_meas_sim;
 
 			sub_V.getString(voltages);
             V_meas_sim = json::parse(voltages);
 			workQueue.push(V_meas_sim);
+
+            sub_A.getString(angles);
+            A_meas_sim = json::parse(angles);
+			workQueue.push(A_meas_sim);
 
             sub_P.getString(power_real);
 			P_meas_sim = json::parse(power_real);
@@ -509,6 +548,13 @@ public:
 				zid = meas_zids[idx++];
 				meas_mrids.push_back(zid);
 				meas_magnitudes[zid] = (V_message["values"][i].get<double>())/std::abs(node_vnoms[node]);
+				std::cout<< meas_magnitudes[zid] << std::endl;
+			}
+            for (int i = 0; i < A_message["ids"].size(); i++) {
+				string node = A_message["ids"][i];
+				zid = meas_zids[idx++];
+				meas_mrids.push_back(zid);
+				meas_magnitudes[zid] = A_message["values"][i].get<double>();
 				std::cout<< meas_magnitudes[zid] << std::endl;
 			}
 			for (int i = 0; i < P_message["ids"].size(); i++) {
@@ -654,6 +700,7 @@ private:
 	json P_meas;
 	json Q_meas;
 	json V_meas;
+    json A_meas;
 	
     SharedQueue<json> workQueue;
 	double Sbase;
@@ -671,6 +718,7 @@ private:
 	helicscpp::Input sub_P;
 	helicscpp::Input sub_Q;
 	helicscpp::Input sub_V;
+    helicscpp::Input sub_A;
 	
     std::string topology;
     std::string power_real;
@@ -682,6 +730,7 @@ private:
     int Total_ts = 97;
 	
     json V_message;
+    json A_message;
 
     json inputMap;
     json staticInput;
