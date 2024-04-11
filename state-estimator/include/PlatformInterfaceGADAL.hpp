@@ -724,6 +724,7 @@ private:
     std::string power_real;
     std::string power_imag;
     std::string voltages;
+    std::string angles;
 	
     SLIST node_est_v;
 	
