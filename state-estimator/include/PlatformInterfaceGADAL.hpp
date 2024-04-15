@@ -373,10 +373,10 @@ public:
         for (int i = 0; i < A_meas["ids"].size(); i++) {
             string node, zid;
             node = A_meas["ids"][i];
-            zid = "A_" + node;
+            zid = "T_" + node;
             Zary.zids.push_back(zid);
             Zary.zidxs[zid] = zctr++;
-            Zary.ztypes[zid] = "ai";
+            Zary.ztypes[zid] = "Ti";
             Zary.znode1s[zid] = node;
             Zary.znode2s[zid] = node;
             Zary.zvals[zid] = A_meas["values"][i].get<double>();
@@ -548,14 +548,14 @@ public:
 				zid = meas_zids[idx++];
 				meas_mrids.push_back(zid);
 				meas_magnitudes[zid] = (V_message["values"][i].get<double>())/std::abs(node_vnoms[node]);
-				std::cout<< meas_magnitudes[zid] << std::endl;
+				// std::cout<< meas_magnitudes[zid] << std::endl;
 			}
             for (int i = 0; i < A_message["ids"].size(); i++) {
 				string node = A_message["ids"][i];
 				zid = meas_zids[idx++];
 				meas_mrids.push_back(zid);
 				meas_magnitudes[zid] = A_message["values"][i].get<double>();
-				std::cout<< meas_magnitudes[zid] << std::endl;
+				// std::cout<< meas_magnitudes[zid] << std::endl;
 			}
 			for (int i = 0; i < P_message["ids"].size(); i++) {
 				string node = P_message["ids"][i];
