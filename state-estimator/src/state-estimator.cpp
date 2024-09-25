@@ -2,22 +2,22 @@
 #define SWITCHES
 //#define NET_INJECTION
 #ifdef NET_INJECTION
-//#define COMPARE_INJ_MEAS
+#define COMPARE_INJ_MEAS
 #endif
 
 #define DEBUG_PRIMARY
 #define DEBUG_STATS
-//#define DEBUG_FILES
-//#define DEBUG_SIZES
+#define DEBUG_FILES
+#define DEBUG_SIZES
 
 //#define SBASE_TESTING
-
+//#define SBASE_NONE
 #define GS_OPTIMIZE
 // whether to store negligable values in sparse matrices or not
 // defining USE_NEGL indicates not to store negligable values
 //#define USE_NEGL // be careful using this as it can throw away needed values
 
-//#define WRITE_FILES
+#define WRITE_FILES
 
 #include <iostream>
 #include <fstream>

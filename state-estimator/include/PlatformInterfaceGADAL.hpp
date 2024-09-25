@@ -37,7 +37,7 @@ using json = nlohmann::json;
 class PlatformInterface : public PlatformInterfaceBase {
 public:
     PlatformInterface(int argc, char** argv, const double& sbase) : PlatformInterfaceBase(argc, argv, sbase) {
-    std::string fedinitstring = "--federates=1";
+    std::string fedinitstring = "--federates=1 --slowresponding";
     double deltat = 1;
     Sbase = sbase;
 
@@ -71,7 +71,7 @@ public:
 
     fi.setProperty(HELICS_PROPERTY_INT_MAX_ITERATIONS, 100);
 
-    fi.setProperty(HELICS_PROPERTY_INT_LOG_LEVEL, HELICS_LOG_LEVEL_WARNING);
+    fi.setProperty(HELICS_PROPERTY_INT_LOG_LEVEL, HELICS_LOG_LEVEL_DEBUG);
 
     /* Create value federate */
     vfed = new helicscpp::ValueFederate(staticInput["name"], fi);
@@ -81,8 +81,6 @@ public:
     sub_topo = vfed->registerSubscription(inputMap["topology"],"");
 
     sub_V = vfed->registerSubscription(inputMap["sensor_voltage_magnitude"],"V");
-
-    sub_A = vfed->registerSubscription(inputMap["sensor_voltage_angle"],"V");
     
     sub_P = vfed->registerSubscription(inputMap["sensor_power_real"],"W");
     
@@ -103,11 +101,7 @@ public:
     }
 
     if(sub_V.isValid()){
-        std::cout << " Subscription registered for feeder voltage magnitude Vmag with port " << inputMap["sensor_voltage_magnitude"] << std::endl;
-    }
-
-    if(sub_A.isValid()){
-        std::cout << " Subscription registered for feeder voltage angle Vang with port " << inputMap["sensor_voltage_angle"] << std::endl;
+        std::cout << " Subscription registered for feeder voltage V with port " << inputMap["sensor_voltage_magnitude"] << std::endl;
     }
 
     // Set up publications
@@ -121,64 +115,97 @@ public:
     if(pub_Vang.isValid()){
         std::cout << " Vang Publication registered\n";
     }
-
+    try{
      /* Enter initialization state */
-    vfed->enterInitializingMode();  // can throw helicscpp::InvalidStateTransition exception
-    std::cout << " Entered initialization state" << std::endl;
-
-    /* Enter execution state */
-    vfed->enterExecutingMode();  // can throw helicscpp::InvalidStateTransition exception
-    std::cout << " Entered execution state\n";
-
+        std::cout << " (BEFORE) Entering initialization state\n";
+        vfed->enterInitializingMode();  // can throw helicscpp::InvalidStateTransition exception
+        std::cout << " Entered initialization state" << std::endl;
+    } catch(...) {
+        std::cout << " Unknown error in enterInitializingMode" << std::endl;
+    }
+    try{
+        /* Enter execution state */
+        std::cout << " (BEFORE) Entering execution state\n";
+        vfed->enterExecutingMode();  // can throw helicscpp::InvalidStateTransition exception
+        std::cout << " Entered execution state\n";
+    } catch(...) {
+        std::cout << " Unknown error in enterExecutingMode" << std::endl;
+    }
+        
     currenttime = 0.0;
     ts=1;
-    currenttime = vfed->requestTime(10000);
+    std::cout << "Requesting time" << std::endl;
+    currenttime = vfed->requestTime(HELICS_TIME_MAXTIME);
+    std::cout << "Received time: " << currenttime << std::endl;
 
     // check whether all subscriptions are updated or not
     // if not request more time
-    while (1)
-    {
-        if ((sub_topo.isUpdated()) && (sub_P.isUpdated()) && (sub_Q.isUpdated()) && (sub_V.isUpdated()) && (sub_A.isUpdated()))
+    try{
+        while (1)
         {
-            break;
+            if ((sub_topo.isUpdated()) && (sub_V.isUpdated()) && (sub_Q.isUpdated()) && (sub_P.isUpdated()))
+            {
+                std::cout << "Inputs updated at " << currenttime << std::endl;
+                break;
+            }
+            else
+            {
+                std::cout << "Inputs not updated... Requesting more time..." << std::endl;
+                currenttime = vfed->requestTime(HELICS_TIME_MAXTIME);
+                std::cout << "Received Time: " << currenttime << std::endl;
+            }
         }
-        else
-        {
-            std::cout << "Inputs not updated... Requesting more time..." << std::endl;
-            currenttime = vfed->requestTime(10000);
+
+        // Get the topology subscription
+        sub_topo.getString(topology);
+        topo = json::parse(topology);
+        // Get the voltage magnitude subscription
+        sub_V.getString(voltages);
+        V_meas = json::parse(voltages);
+        std::cout<< V_meas<< std::endl;
+        workQueue.push(V_meas);
+
+        // Get the real power subscription
+        sub_P.getString(power_real);
+        P_meas = json::parse(power_real);
+        convertUnits(P_meas);
+        std::cout <<P_meas << std::endl;
+        workQueue.push(P_meas);
+
+        // Get the reactive power subscription
+        sub_Q.getString(power_imag);
+        Q_meas = json::parse(power_imag);
+        convertUnits(Q_meas);
+        std::cout <<Q_meas << std::endl;
+        workQueue.push(Q_meas);
+        } catch (...) {
+
+                std::cout << "Error in PlatformInterfaceGADAL initialization" << std::endl;
         }
     }
 
-    // Get the topology subscription
-    sub_topo.getString(topology);
-    topo = json::parse(topology);
 
-    // Get the voltage magnitude subscription
-    sub_V.getString(voltages);
-    V_meas = json::parse(voltages);
-    std::cout<< V_meas<< std::endl;
-    workQueue.push(V_meas);
-
-    // Get the voltage magnitude subscription
-    sub_A.getString(angles);
-    A_meas = json::parse(angles);
-    std::cout<< A_meas<< std::endl;
-    workQueue.push(A_meas);
-
-    // Get the real power subscription
-    sub_P.getString(power_real);
-    P_meas = json::parse(power_real);
-    std::cout <<P_meas << std::endl;
-    workQueue.push(P_meas);
-
-    // Get the reactive power subscription
-    sub_Q.getString(power_imag);
-    Q_meas = json::parse(power_imag);
-    std::cout <<Q_meas << std::endl;
-    workQueue.push(Q_meas);
+    void convertUnits(json& meas) {
+        // Change the units from "kW" to "W"
+        double convert_factor = 1;
+        bool convert_units = false;
+        if (meas["units"] == "kW"){
+            meas["units"] = "W";
+            convert_factor = 1000;
+            convert_units = true;
+        }
+        if (meas["units"] == "kVAR"){
+            meas["units"] = "VAR";
+            convert_factor = 1000;
+            convert_units = true;
+        }
+        if (convert_units){
+            for (auto& value : meas["values"]) {
+                value = value.get<double>() * 1000;
+            }
+        }
 
     }
-
 
     void setupMeasurements() {               //measurement ids are loaded here (Done)
         //Adding meas ids
@@ -188,12 +215,6 @@ public:
         for (int i = 0; i < V_meas["ids"].size(); i++) {
             string meas_id = V_meas["ids"][i];
             meas_id = "V_" + meas_id;
-            meas_zids.push_back(meas_id);
-        }
-        std::cout << std::size(meas_zids) << "\n\n";
-        for (int i = 0; i < A_meas["ids"].size(); i++) {
-            string meas_id = A_meas["ids"][i];
-            meas_id = "A_" + meas_id;
             meas_zids.push_back(meas_id);
         }
         std::cout << std::size(meas_zids) << "\n\n";
@@ -246,10 +267,10 @@ public:
 
     void fillTopo() {    //reads nodes list and y matrix info (Done)
 
-        //std::cout << std::setw(4) << topo["unique_ids"].size()<< "\n\n";
+        std::cout << std::setw(4) << topo["unique_ids"].size()<< "\n\n";
         for (int i = 0; i < topo["base_voltage_magnitudes"]["ids"].size(); i++) {
             string node_name_new = topo["base_voltage_magnitudes"]["ids"][i];
-            //std::cout << node_name_new << "\n\n";
+            std::cout << node_name_new << "\n\n";
             node_names.push_back(node_name_new);   //a list
         }
         std::cout << node_names.size() << "\n\n";
@@ -257,14 +278,15 @@ public:
         if (!sparse_impl)
         {
             std::cout<< "Not a sparse matrix implementation" << std::endl;
+            std::cout<< "admittance_matrix size: " << topo["admittance"]["admittance_matrix"].size() << std::endl;
             for (int i = 0; i < topo["admittance"]["admittance_matrix"].size(); i++) {
-                //std::cout<< i << std::endl;
+//                std::cout<< "i: "<< i << std::endl;
                 for (int j = 0; j < topo["admittance"]["admittance_matrix"][i].size(); j++) {
-                    //std::cout<< j << std::endl;
+                    std::cout<< "i: "<< i << " j: " << j << std::endl;
                     double G = (topo["admittance"]["admittance_matrix"][i][j][0]);
                     double B = (topo["admittance"]["admittance_matrix"][i][j][1]);
-                    //std::cout<< G << std::endl;
-                    //std::cout<< B << std::endl;
+                    std::cout<< "G: " << G << " B: " << B << std::endl;
+//                    std::cout<< B << std::endl;
 
                     if ((G!=0) || (B!=0)){
                     Yphys[i+1][j+1] = complex<double>(G,B);
@@ -277,6 +299,7 @@ public:
         else
         {
             std::cout<< "Sparse matrix implementation" << std::endl;
+            std::cout<< "admittance_matrix size: " << topo["admittance"]["admittance_list"].size() << std::endl;
             //____________________ now for sparse implementation:
             for (int a = 0; a < topo["admittance"]["admittance_list"].size(); a++) {
                 int i = 0;
@@ -326,11 +349,11 @@ public:
     }
 
 
-    void fillVnoms() 
+    void fillVnoms()
     {
         std::cout << "Filling Vnoms" << std::endl;
         //Vnoms are loaded here (Done)
-        for (int i = 0; i < topo["base_voltage_magnitudes"]["ids"].size(); i++) 
+        for (int i = 0; i < topo["base_voltage_magnitudes"]["ids"].size(); i++)
         {
             //std::cout<< i << std::endl;
             string node = topo["base_voltage_magnitudes"]["ids"][i];
@@ -355,6 +378,22 @@ public:
         //uint zctr = 0;
         uint zctr = Zary.zids.size();
         std::cout<< Zary.zids.size() << std::endl;
+
+        double total_load=0;
+        double total_load_q=0;
+        for (int i = 0; i < topo["injections"]["power_real"]["ids"].size(); i++) {
+            total_load += (topo["injections"]["power_real"]["values"][i].get<double>())/Sbase*1000;
+        }
+        for (int i = 0; i < topo["injections"]["power_imaginary"]["ids"].size(); i++) {
+            total_load_q += (topo["injections"]["power_imaginary"]["values"][i].get<double>())/Sbase*1000;
+        }
+        double average_load_p = total_load/topo["injections"]["power_real"]["ids"].size();
+        double average_load_q = total_load_q/topo["injections"]["power_imaginary"]["ids"].size();
+        double base_psuedo_sigma_p = 0.05*average_load_p;
+        double base_psuedo_sigma_q = 0.05*average_load_q;
+        double base_sigma_p = 0.005*average_load_p;
+        double base_sigma_q = 0.005*average_load_q;
+
         for (int i = 0; i < V_meas["ids"].size(); i++) {
             string node, zid;
             node = V_meas["ids"][i];
@@ -366,55 +405,45 @@ public:
             Zary.znode2s[zid] = node;
             Zary.zvals[zid] = (V_meas["values"][i].get<double>())/std::abs(node_vnoms[node]);
             //std::cout<< Zary.zvals[zid] << std::endl;
-            Zary.zsigs[zid] = 0.001;
+            Zary.zsigs[zid] = 0.01;
             Zary.zpseudos[zid] = false;
             Zary.znomvals[zid] = (V_meas["values"][i].get<double>())/std::abs(node_vnoms[node]);
-        }
-        for (int i = 0; i < A_meas["ids"].size(); i++) {
-            string node, zid;
-            node = A_meas["ids"][i];
-            zid = "T_" + node;
-            Zary.zids.push_back(zid);
-            Zary.zidxs[zid] = zctr++;
-            Zary.ztypes[zid] = "Ti";
-            Zary.znode1s[zid] = node;
-            Zary.znode2s[zid] = node;
-            Zary.zvals[zid] = A_meas["values"][i].get<double>();
-            //std::cout<< Zary.zvals[zid] << std::endl;
-            Zary.zsigs[zid] = 0.001;
-            Zary.zpseudos[zid] = false;
-            Zary.znomvals[zid] = A_meas["values"][i].get<double>();
         }
         for (int i = 0; i < P_meas["ids"].size(); i++) {
             string node, zid;
             node = P_meas["ids"][i];
             zid = "P_" + node;
-            Zary.zids.push_back(zid);
-            Zary.zidxs[zid] = zctr++;
-            Zary.ztypes[zid] = "Pi";
-            Zary.znode1s[zid] = node;
-            Zary.znode2s[zid] = node;
-            Zary.zvals[zid] = -P_meas["values"][i].get<double>()/Sbase;
-            //std::cout<< Zary.zvals[zid] << std::endl;
-            Zary.zsigs[zid] = 0.001;
-            Zary.zpseudos[zid] = false;
-            Zary.znomvals[zid] = -P_meas["values"][i].get<double>()/Sbase;
-            //}
+            if (std::find(topo["injections"]["power_real"]["ids"].begin(), topo["injections"]["power_real"]["ids"].end(), node) != topo["injections"]["power_real"]["ids"].end()){
+                // if node in set of loads and pvs then add otherwise skip
+                Zary.zids.push_back(zid);
+                Zary.zidxs[zid] = zctr++;
+                Zary.ztypes[zid] = "Pi";
+                Zary.znode1s[zid] = node;
+                Zary.znode2s[zid] = node;
+                Zary.zvals[zid] = -P_meas["values"][i].get<double>()/Sbase;
+                //std::cout<< Zary.zvals[zid] << std::endl;
+                Zary.zsigs[zid] = 0.01*(-P_meas["values"][i].get<double>()/Sbase) + base_sigma_p;
+                Zary.zpseudos[zid] = false;
+                Zary.znomvals[zid] = -P_meas["values"][i].get<double>()/Sbase;
+            }
         }
         for (int i = 0; i < Q_meas["ids"].size(); i++) {
             string node, zid;
             node = Q_meas["ids"][i];
             zid = "Q_" + node;
-            Zary.zids.push_back(zid);
-            Zary.zidxs[zid] = zctr++;
-            Zary.ztypes[zid] = "Qi";
-            Zary.znode1s[zid] = node;
-            Zary.znode2s[zid] = node;
-            Zary.zvals[zid] = -Q_meas["values"][i].get<double>()/Sbase;
-            Zary.zsigs[zid] = 0.001;
-            Zary.zpseudos[zid] = false;
-            Zary.znomvals[zid] = -Q_meas["values"][i].get<double>()/Sbase;
-            //}
+            if (std::find(topo["injections"]["power_imaginary"]["ids"].begin(), topo["injections"]["power_imaginary"]["ids"].end(), node) != topo["injections"]["power_imaginary"]["ids"].end()){
+                // if node in set of loads and pvs then add otherwise skip
+                Zary.zids.push_back(zid);
+                Zary.zidxs[zid] = zctr++;
+                Zary.ztypes[zid] = "Qi";
+                Zary.znode1s[zid] = node;
+                Zary.znode2s[zid] = node;
+                Zary.zvals[zid] = -Q_meas["values"][i].get<double>()/Sbase;
+                Zary.zsigs[zid] = 0.01*(-Q_meas["values"][i].get<double>()/Sbase) + base_sigma_q;
+                Zary.zpseudos[zid] = false;
+                Zary.znomvals[zid] = -Q_meas["values"][i].get<double>()/Sbase;
+                //}
+            }
         }
 
         //inserting pseudo meas
@@ -433,7 +462,7 @@ public:
                 Zary.znode1s [vmag_zid] = node;
                 Zary.znode2s [vmag_zid] = node;
                 Zary.zvals   [vmag_zid] = 1.00;
-                Zary.zsigs   [vmag_zid] = 0.001; // 1 sigma = 0.1%
+                Zary.zsigs   [vmag_zid] = 0.05; // 1 sigma = 0.1%
                 Zary.zpseudos[vmag_zid] = true;
                 Zary.znomvals[vmag_zid] = Zary.zvals[vmag_zid];
 
@@ -459,13 +488,13 @@ public:
                 double val=0;
                 for (int i = 0; i < topo["injections"]["power_real"]["ids"].size(); i++) {
                     if (topo["injections"]["power_real"]["ids"][i] == node){
-                        val = (topo["injections"]["power_real"]["values"][i].get<double>())/Sbase;
+                        val = (topo["injections"]["power_real"]["values"][i].get<double>())/Sbase*1000;
                     }
                 }
                 //std::cout << "value assigned is: " << std::endl;
                 //std::cout << val << std::endl;
-                Zary.zvals   [pinj_zid] = val;
-                Zary.zsigs   [pinj_zid] = 0.001; // load + leakage
+                Zary.zvals   [pinj_zid] = val/2; // assume nominal is half of peak load
+                Zary.zsigs   [pinj_zid] = val/2 + base_psuedo_sigma_p; // load + leakage
                 Zary.zpseudos[pinj_zid] = true;
                 Zary.znomvals[pinj_zid] = Zary.zvals[pinj_zid];
 
@@ -480,12 +509,11 @@ public:
                 double val_q_adj=0;
                 for (int i = 0; i < topo["injections"]["power_imaginary"]["ids"].size(); i++) {
                     if (topo["injections"]["power_imaginary"]["ids"][i] == node){
-                        val_q = (topo["injections"]["power_imaginary"]["values"][i].get<double>())/Sbase;
+                        val_q = (topo["injections"]["power_imaginary"]["values"][i].get<double>())/Sbase*1000;
                     }
                 }
-
-                Zary.zvals   [qinj_zid] = val_q;
-                Zary.zsigs   [qinj_zid] = 0.001;
+                Zary.zvals   [qinj_zid] = val_q/2; // assume nominal is half of peak load
+                Zary.zsigs   [qinj_zid] = val_q/2 + base_psuedo_sigma_q;
                 Zary.zpseudos[qinj_zid] = true;
                 Zary.znomvals[qinj_zid] = Zary.zvals[qinj_zid];
 
@@ -499,40 +527,36 @@ public:
     bool fillMeasurement() {         //Todo --------how to form workqueue
         //_________________________________________________________________
         bool ret = true;
-		
-		if (currenttime <= Total_ts) 
+
+		if (currenttime <= Total_ts)
         {
 			std::cout << "Current Time: " << currenttime << std::endl;
-			
+
 
 			// currenttime = vfed->requestTime(10000);
 
 			V_message = workQueue.pop();
-            A_message = workQueue.pop();
 			json P_message = workQueue.pop();
 			json Q_message = workQueue.pop();
 
 			std::cout<< V_message<< std::endl;
-            std::cout<< A_message<< std::endl;
 			std::cout<< P_message << std::endl;
 			std::cout<< Q_message<< std::endl;
-			
-			json V_meas_sim, A_meas_sim, P_meas_sim, Q_meas_sim;
+
+			json V_meas_sim, P_meas_sim, Q_meas_sim;
 
 			sub_V.getString(voltages);
             V_meas_sim = json::parse(voltages);
 			workQueue.push(V_meas_sim);
 
-            sub_A.getString(angles);
-            A_meas_sim = json::parse(angles);
-			workQueue.push(A_meas_sim);
-
             sub_P.getString(power_real);
 			P_meas_sim = json::parse(power_real);
+			convertUnits(P_meas_sim);
 			workQueue.push(P_meas_sim);
 
 			sub_Q.getString(power_imag);
 			Q_meas_sim = json::parse(power_imag);
+			convertUnits(Q_meas_sim);
 			workQueue.push(Q_meas_sim);
 
 			meas_timestamp = 0;
@@ -548,14 +572,7 @@ public:
 				zid = meas_zids[idx++];
 				meas_mrids.push_back(zid);
 				meas_magnitudes[zid] = (V_message["values"][i].get<double>())/std::abs(node_vnoms[node]);
-				// std::cout<< meas_magnitudes[zid] << std::endl;
-			}
-            for (int i = 0; i < A_message["ids"].size(); i++) {
-				string node = A_message["ids"][i];
-				zid = meas_zids[idx++];
-				meas_mrids.push_back(zid);
-				meas_magnitudes[zid] = A_message["values"][i].get<double>();
-				// std::cout<< meas_magnitudes[zid] << std::endl;
+				std::cout<< meas_magnitudes[zid] << std::endl;
 			}
 			for (int i = 0; i < P_message["ids"].size(); i++) {
 				string node = P_message["ids"][i];
@@ -700,12 +717,11 @@ private:
 	json P_meas;
 	json Q_meas;
 	json V_meas;
-    json A_meas;
 	
     SharedQueue<json> workQueue;
 	double Sbase;
 	double ts;
-	bool sparse_impl = false;
+	const bool sparse_impl = true;
 	
     helicscpp::Publication pub_Vmag;
 	helicscpp::Publication pub_Vang;
@@ -718,20 +734,17 @@ private:
 	helicscpp::Input sub_P;
 	helicscpp::Input sub_Q;
 	helicscpp::Input sub_V;
-    helicscpp::Input sub_A;
 	
     std::string topology;
     std::string power_real;
     std::string power_imag;
     std::string voltages;
-    std::string angles;
 	
     SLIST node_est_v;
 	
     int Total_ts = 97;
 	
     json V_message;
-    json A_message;
 
     json inputMap;
     json staticInput;

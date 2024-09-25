@@ -1376,6 +1376,15 @@ class SELoopWorker {
         } ofh.close();
 #endif
 
+        // update time uncertainty since last measurement values
+        this->prep_R(Rmat, timestamp);
+#ifdef DEBUG_STATS
+        print_cs_stats(Rmat, "Rmat");
+#endif
+#ifdef DEBUG_FILES
+        print_cs_compress(Rmat,tspath+"R.csv");
+#endif
+
         // --------------------------------------------------------------------
         // Predict Step
         // --------------------------------------------------------------------
@@ -1521,14 +1530,7 @@ class SELoopWorker {
         print_cs_compress(S3,tspath+"S3.csv");
 #endif
 
-        // update time uncertainty since last measurement values
-        this->prep_R(Rmat, timestamp);
-#ifdef DEBUG_STATS
-        print_cs_stats(Rmat, "Rmat");
-#endif
-#ifdef DEBUG_FILES
-        print_cs_compress(Rmat,tspath+"R.csv");
-#endif
+
 
         cs *Supd = cs_add(Rmat,S3,1,1); cs_spfree(S3);
         if (!Supd) *selog << "\tERROR: null Supd\n" << std::flush;
@@ -1634,6 +1636,7 @@ class SELoopWorker {
             klu_free_numeric(&klunum, &klucom);
         } catch (const char *msg) {
             *selog << "\tERROR: KLU message: " << msg << "\n" << std::flush;
+            exit(1);
             throw "klu_error";
         }
         cs_spfree(Supd);
@@ -1641,6 +1644,7 @@ class SELoopWorker {
 #if 000
         if (estimateExitCount == 40) {
             estimateExitCount = 0;
+            exit(1);
             throw "klu_error";
         }
 #endif
