@@ -39,7 +39,6 @@ public:
       : PlatformInterfaceBase(argc, argv, sbase) {
     std::string fedinitstring = "--federates=1 --slowresponding";
     double deltat = 1;
-    Sbase = sbase;
 
     std::filesystem::path inputMapFile =
         std::filesystem::current_path() / "input_mapping.json";
@@ -167,6 +166,24 @@ public:
       // Get the topology subscription
       sub_topo.getString(topology);
       topo = json::parse(topology);
+
+      SDMAP voltages_mag = extractBaseVoltagesMagnitudes(topo);
+      SDMAP voltages_ang = extractBaseVoltagesAngles(topo);
+      base_voltages = polarMap(voltages_mag, voltages_ang);
+
+      std::cout << "Voltage Nodes : " << base_voltages.size() << std::endl;
+
+      SDMAP powers_real = extractInjections(topo["injections"]["powers_real"]);
+      SDMAP powers_imag =
+          extractInjections(topo["injections"]["powers_imaginary"]);
+      base_powers = cartMap(powers_real, powers_imag);
+
+      std::cout << "Injection Nodes : " << base_powers.size() << std::endl;
+
+      total_power = totalInjections(base_powers);
+      double sbase_new = ceilingPowerOfTen(total_power);
+      sbase_ref = &sbase_new;
+
       // Get the voltage magnitude subscription
       sub_V.getString(voltages);
       V_meas = json::parse(voltages);
@@ -176,14 +193,12 @@ public:
       // Get the real power subscription
       sub_P.getString(power_real);
       P_meas = json::parse(power_real);
-      convertUnits(P_meas);
       std::cout << P_meas << std::endl;
       workQueue.push(P_meas);
 
       // Get the reactive power subscription
       sub_Q.getString(power_imag);
       Q_meas = json::parse(power_imag);
-      convertUnits(Q_meas);
       std::cout << Q_meas << std::endl;
       workQueue.push(Q_meas);
     } catch (...) {
@@ -193,13 +208,13 @@ public:
     }
   }
 
-  SDMAP extractRealPowers(const json &powers) {
+  SDMAP extractPowers(const json &powers) {
     json ids = powers["ids"];
     json values = powers["values"];
     json units = powers["units"];
 
     double scale = 1.0;
-    if (units == "kW")
+    if (units == "kW" || units == "kVAR")
       scale = 1000.0;
 
     SDMAP mapping;
@@ -214,36 +229,14 @@ public:
     return mapping;
   };
 
-  SDMAP extractImaginaryPowers(const json &powers) {
-    json ids = powers["ids"];
-    json values = powers["values"];
-    json units = powers["units"];
+  SDMAP extractInjections(const json &injections) {
+    json ids = injections["ids"];
+    json eqids = injections["equipment_ids"];
+    json values = injections["values"];
+    json units = injections["units"];
 
     double scale = 1.0;
-    if (units == "kVAR")
-      scale = 1000.0;
-
-    SDMAP mapping;
-    for (size_t i = 0; i <= ids.size(); i++) {
-      double x = scale * (double)values[i];
-      if (mapping.count(ids[i]) > 0) {
-        mapping[ids[i]] += x;
-      } else {
-        mapping.insert({ids[i], x});
-      }
-    }
-    return mapping;
-  };
-
-  SDMAP extractRealInjections(const json &injections) {
-    json obj = injections["power_real"];
-    json ids = obj["ids"];
-    json eqids = obj["equipment_ids"];
-    json values = obj["values"];
-    json units = obj["units"];
-
-    double scale = 1.0;
-    if (units == "kW")
+    if (units == "kW" || units == "kVAR")
       scale = 1000.0;
 
     SDMAP mapping;
@@ -262,29 +255,13 @@ public:
     return mapping;
   };
 
-  SDMAP extractImaginaryInjections(const json &injections) {
-    json obj = injections["power_imaginary"];
-    json ids = obj["ids"];
-    json eqids = obj["equipment_ids"];
-    json values = obj["values"];
-    json units = obj["units"];
-
-    double scale = 1.0;
-    if (units == "kVAR")
-      scale = 1000.0;
+  SDMAP extractVoltages(const json &voltages) {
+    json ids = voltages["ids"];
+    json values = voltages["values"];
 
     SDMAP mapping;
     for (size_t i = 0; i <= ids.size(); i++) {
-      std::string eq = eqids[i];
-      if (eq.find("Capacitor") == std::string::npos)
-        continue;
-
-      double x = scale * (double)values[i];
-      if (mapping.count(ids[i]) > 0) {
-        mapping[ids[i]] += x;
-      } else {
-        mapping.insert({ids[i], x});
-      }
+      mapping.insert({ids[i], (double)values[i]});
     }
     return mapping;
   };
@@ -332,7 +309,7 @@ public:
     return mapping;
   }
 
-  std::complex<double> totalInjections(const SDMAP &injections) {
+  std::complex<double> totalInjections(const SCMAP &injections) {
     std::complex<double> total(0, 0);
     for (const auto power : injections) {
       total += power.second;
@@ -350,53 +327,22 @@ public:
     std::cout << "number of meas id here" << "\n\n";
     std::cout << std::size(meas_zids) << "\n\n";
 
-    for (int i = 0; i < V_meas["ids"].size(); i++) {
-      string meas_id = V_meas["ids"][i];
-      meas_id = "V_" + meas_id;
-      meas_zids.push_back(meas_id);
+    for (const auto voltage : base_voltages) {
+      meas_zids.push_back("V_" + voltage.first);
     }
-    std::cout << std::size(meas_zids) << "\n\n";
-    for (int i = 0; i < P_meas["ids"].size(); i++) {
-      string meas_id = P_meas["ids"][i];
-      meas_id = "P_" + meas_id;
-      meas_zids.push_back(meas_id);
+    for (const auto power : base_powers) {
+      meas_zids.push_back("P_" + power.first);
+      meas_zids.push_back("Q_" + power.first);
     }
-    std::cout << std::size(meas_zids) << "\n\n";
-    for (int i = 0; i < Q_meas["ids"].size(); i++) {
-      string meas_id = Q_meas["ids"][i];
-      meas_id = "Q_" + meas_id;
-      meas_zids.push_back(meas_id);
-    }
-    std::cout << "number of meas id" << "\n\n";
-    std::cout << std::size(meas_zids) << "\n\n";
-
-    SLIST node_names_tmp;
-    for (int i = 0; i < topo["base_voltage_magnitudes"]["ids"].size(); i++) {
-      string node_name_new = topo["base_voltage_magnitudes"]["ids"][i];
-      // std::cout << node_name_new << "\n\n";
-      node_names_tmp.push_back(node_name_new); // a list
-    }
-
-    for (auto &node : node_names_tmp) {
-      // std::cout << "inside" << "\n\n";
-      //  Check for SOURCEBUS
-      if ((node == topo["slack_bus"][0].get<string>()) ||
-          (node == topo["slack_bus"][1].get<string>()) ||
-          (node == topo["slack_bus"][2].get<string>())) {
-        // std::cout << "inside-1" << "\n\n";
-        string meas_id = "source_V_" + node;
-        meas_zids.push_back(meas_id);
-
-        meas_id = "source_T_" + node;
-        meas_zids.push_back(meas_id);
+    SLIST slack_bus = topo["slack_bus"];
+    for (const auto voltage : base_voltages) {
+      auto it = std::find(slack_bus.begin(), slack_bus.end(), voltage.first);
+      if (it != slack_bus.end()) {
+        meas_zids.push_back("source_V_" + voltage.first);
+        meas_zids.push_back("source_T_" + voltage.first);
       } else {
-
-        // Add the P and Q injection
-        string meas_id = "pseudo_P_" + node;
-        meas_zids.push_back(meas_id);
-
-        meas_id = "pseudo_Q_" + node;
-        meas_zids.push_back(meas_id);
+        meas_zids.push_back("pseudo_P_" + voltage.first);
+        meas_zids.push_back("pseudo_Q_" + voltage.first);
       }
     }
     std::cout << "number of meas id after appending pseudo meas" << "\n\n";
@@ -488,23 +434,7 @@ public:
 
   void fillVnoms() {
     std::cout << "Filling Vnoms" << std::endl;
-    // Vnoms are loaded here (Done)
-    for (int i = 0; i < topo["base_voltage_magnitudes"]["ids"].size(); i++) {
-      // std::cout<< i << std::endl;
-      string node = topo["base_voltage_magnitudes"]["ids"][i];
-      // std::cout<< node << std::endl;
-      double mag = (topo["base_voltage_magnitudes"]["values"][i]);
-      // std::cout<< mag << std::endl;
-      double arg = (topo["base_voltage_angles"]["values"][i]);
-      // std::cout<< arg << std::endl;
-      double vre = mag * cos(arg);
-      double vim = mag * sin(arg);
-
-      complex<double> vnom = complex<double>(vre, vim);
-      // std::cout<< node << std::endl;
-      // std::cout<< vnom << std::endl;
-      node_vnoms[node] = vnom; // a complex with both mag and angle
-    }
+    node_vnoms = base_voltages; // a complex with both mag and angle
     //__________________________________________________________________
   }
 
@@ -994,7 +924,7 @@ private:
   json V_meas;
 
   SharedQueue<json> workQueue;
-  double Sbase;
+  std::complex<double> total_power;
   double ts;
   const bool sparse_impl = true;
 
@@ -1014,6 +944,9 @@ private:
   std::string power_real;
   std::string power_imag;
   std::string voltages;
+
+  SCMAP base_voltages;
+  SCMAP base_powers;
 
   SLIST node_est_v;
 
